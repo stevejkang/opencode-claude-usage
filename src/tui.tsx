@@ -1,5 +1,8 @@
 /** @jsxImportSource @opentui/solid */
+import { createSignal } from "solid-js"
+import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import type { UsageState, PluginOptions } from "./types.js"
+import { createRefreshLoop } from "./fetcher.js"
 import { formatRelativeTime, formatPercentage, formatCost, windowLabel } from "./format.js"
 
 const WINDOW_KEYS = [
@@ -104,3 +107,51 @@ export function SidebarContent(props: SidebarContentProps) {
     </box>
   )
 }
+
+// ── Plugin entry point ───────────────────────────────────────────────
+
+const DEFAULT_REFRESH_INTERVAL_S = 60
+
+const tui: TuiPlugin = async (api, rawOptions, _meta) => {
+  const options = (rawOptions as PluginOptions | undefined) ?? {}
+  const refreshIntervalMs = (options.refreshInterval ?? DEFAULT_REFRESH_INTERVAL_S) * 1000
+
+  const [state, setState] = createSignal<UsageState>({
+    status: "idle",
+    data: null,
+    profile: null,
+    authMethod: "none",
+    error: null,
+  })
+
+  const loop = createRefreshLoop(setState, refreshIntervalMs)
+  loop.start()
+
+  api.lifecycle.onDispose(() => {
+    loop.stop()
+  })
+
+  api.slots.register({
+    order: 50,
+    slots: {
+      sidebar_content(ctx, _props) {
+        const t = ctx.theme.current
+        return (
+          <SidebarContent
+            state={state()}
+            options={options}
+            textColor={t.text.toString()}
+            mutedColor={t.textMuted.toString()}
+          />
+        )
+      },
+    },
+  })
+}
+
+const plugin: TuiPluginModule & { id: string } = {
+  id: "opencode-claude-usage",
+  tui,
+}
+
+export default plugin
