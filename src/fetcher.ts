@@ -51,38 +51,43 @@ function writeCache(result: FetchResult): void {
  *
  * Never throws. Always returns a FetchResult.
  */
+const failedTokens = new Set<string>()
+
+async function tryOAuthToken(token: string): Promise<FetchResult | null> {
+  if (failedTokens.has(token)) return null
+  try {
+    const [usage, profile] = await Promise.all([
+      fetchOAuthUsage(token),
+      fetchOAuthProfile(token),
+    ])
+    if (usage) {
+      return { usage, profile, authMethod: "oauth" }
+    }
+    failedTokens.add(token)
+  } catch {
+    failedTokens.add(token)
+  }
+  return null
+}
+
 export async function fetchUsageData(): Promise<FetchResult> {
-  // ── Step 0: Environment variable token (works on all OS) ────────────
+  // ── Step 0: Environment variable token (works on all OS)
   try {
     const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
     if (envToken) {
-      const [usage, profile] = await Promise.all([
-        fetchOAuthUsage(envToken),
-        fetchOAuthProfile(envToken),
-      ])
-      if (usage) {
-        return { usage, profile, authMethod: "oauth" }
-      }
+      const result = await tryOAuthToken(envToken)
+      if (result) return result
     }
-  } catch {
-    // continue
-  }
+  } catch {}
 
   // ── Step 1: Credentials file (~/.claude/.credentials.json, cross-platform)
   try {
     const fileCreds = readCredentialsFile()
     if (fileCreds) {
-      const [usage, profile] = await Promise.all([
-        fetchOAuthUsage(fileCreds.accessToken),
-        fetchOAuthProfile(fileCreds.accessToken),
-      ])
-      if (usage) {
-        return { usage, profile, authMethod: "oauth" }
-      }
+      const result = await tryOAuthToken(fileCreds.accessToken)
+      if (result) return result
     }
-  } catch {
-    // continue
-  }
+  } catch {}
 
   // ── Step 2: OpenCode auth.json + token refresh (cross-platform)
   try {
@@ -93,33 +98,19 @@ export async function fetchUsageData(): Promise<FetchResult> {
         const refreshed = await refreshToken(ocAuth.refreshToken)
         if (refreshed) token = refreshed.accessToken
       }
-      const [usage, profile] = await Promise.all([
-        fetchOAuthUsage(token),
-        fetchOAuthProfile(token),
-      ])
-      if (usage) {
-        return { usage, profile, authMethod: "oauth" }
-      }
+      const result = await tryOAuthToken(token)
+      if (result) return result
     }
-  } catch {
-    // continue
-  }
+  } catch {}
 
-  // ── Step 3: Keychain (macOS only)
+  // ── Step 3: Keychain (macOS only, skip if no user:profile scope)
   try {
     const credentials = await readKeychainCredentials()
     if (credentials?.hasProfileScope) {
-      const [usage, profile] = await Promise.all([
-        fetchOAuthUsage(credentials.accessToken),
-        fetchOAuthProfile(credentials.accessToken),
-      ])
-      if (usage) {
-        return { usage, profile, authMethod: "oauth" }
-      }
+      const result = await tryOAuthToken(credentials.accessToken)
+      if (result) return result
     }
-  } catch {
-    // continue
-  }
+  } catch {}
 
   // ── Step 2: CLI PTY probe (primary for most users) ──────────────────
   try {
