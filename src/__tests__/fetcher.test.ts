@@ -48,6 +48,8 @@ describe("fetchUsageData fallback chain", () => {
       weeklyPercent: 62,
       opusPercent: null,
       sonnetPercent: null,
+      sessionReset: "Resets5pm(Asia/Seoul)",
+      weeklyReset: "ResetsMay2at7pm(Asia/Seoul)",
       email: null,
       org: null,
     })

@@ -1,9 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal } from "solid-js"
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
+import type { TuiPlugin, TuiPluginModule, TuiSlotContext } from "@opencode-ai/plugin/tui"
 import type { UsageState, PluginOptions } from "./types.js"
 import { createRefreshLoop } from "./fetcher.js"
 import { formatRelativeTime, formatPercentage, formatCost, windowLabel } from "./format.js"
+
+const CLAUDE_ORANGE = "#E07A3A"
 
 const WINDOW_KEYS = [
   "fiveHour",
@@ -16,99 +18,6 @@ const WINDOW_KEYS = [
 ] as const
 
 type WindowKey = (typeof WINDOW_KEYS)[number]
-
-interface SidebarContentProps {
-  state: UsageState
-  options: PluginOptions
-  textColor?: string
-  mutedColor?: string
-}
-
-export function SidebarContent(props: SidebarContentProps) {
-  const dim = props.options.dimColor ?? props.mutedColor ?? "#546E7A"
-  const fg = props.options.headerColor ?? props.textColor ?? "#EEFFFF"
-  const valueFg = props.options.valueColor ?? "#82AAFF"
-
-  if (props.state.status === "not-configured") {
-    return (
-      <box flexDirection="column">
-        <box height={1}>
-          <text fg={dim}>{"Run 'claude login' first"}</text>
-        </box>
-      </box>
-    )
-  }
-
-  if (props.state.status === "error" && !props.state.data) {
-    return (
-      <box flexDirection="column">
-        <box height={1}>
-          <text fg={dim}>{"Failed to fetch usage"}</text>
-        </box>
-      </box>
-    )
-  }
-
-  if ((props.state.status === "idle" || props.state.status === "loading") && !props.state.data) {
-    return (
-      <box flexDirection="column">
-        <box height={1}>
-          <text fg={dim}>{"Loading..."}</text>
-        </box>
-      </box>
-    )
-  }
-
-  const data = props.state.data
-  const profile = props.state.profile
-
-  return (
-    <box flexDirection="column">
-      {profile?.email ? (
-        <box height={1} flexDirection="row">
-          <text fg={dim}>{profile.email}</text>
-        </box>
-      ) : null}
-
-      {profile?.email ? (
-        <box height={1} flexDirection="row">
-          <text fg={dim}>{`via ${props.state.authMethod}`}</text>
-        </box>
-      ) : null}
-
-      {data ? (
-        <box flexDirection="column">
-          {WINDOW_KEYS.map((key) => {
-            const window = data[key]
-            if (!window) return null
-            const pct = window.utilization
-            const reset = window.resetsAt
-            const label = windowLabel(key)
-            const pctColor = pct !== null && pct >= 80 ? "#FF5370" : valueFg
-            return (
-              <box id={key} height={1} flexDirection="row">
-                <text fg={fg}>{label.padEnd(8)}</text>
-                <text fg={pctColor}>{formatPercentage(pct).padStart(5)}</text>
-                <text fg={dim}>{`  ${formatRelativeTime(reset)}`}</text>
-              </box>
-            )
-          })}
-
-          {data.extraUsage?.isEnabled ? (
-            <box height={1} flexDirection="row">
-              <text fg={fg}>{"Credit  "}</text>
-              <text fg={valueFg}>
-                {formatCost(data.extraUsage.usedCredits, data.extraUsage.monthlyLimit, data.extraUsage.currency)}
-              </text>
-            </box>
-          ) : null}
-        </box>
-      ) : null}
-    </box>
-  )
-}
-
-// ── Plugin entry point ───────────────────────────────────────────────
 
 const DEFAULT_REFRESH_INTERVAL_S = 60
 
@@ -124,26 +33,134 @@ const tui: TuiPlugin = async (api, rawOptions, _meta) => {
     error: null,
   })
 
-  const loop = createRefreshLoop(setState, refreshIntervalMs)
+  const EXPECTED_LOAD_S = 25
+  const [countdown, setCountdown] = createSignal(EXPECTED_LOAD_S)
+  let tickTimer: ReturnType<typeof setInterval> | null = null
+
+  const wrappedSetState = (s: UsageState) => {
+    if (s.status === "loading" && !s.data) {
+      setCountdown(EXPECTED_LOAD_S)
+      if (!tickTimer) {
+        tickTimer = setInterval(() => {
+          setCountdown((prev) => Math.max(0, prev - 1))
+        }, 1000)
+      }
+    } else if (tickTimer) {
+      clearInterval(tickTimer)
+      tickTimer = null
+    }
+    setState(s)
+  }
+
+  const loop = createRefreshLoop(wrappedSetState, refreshIntervalMs)
   loop.start()
 
   api.lifecycle.onDispose(() => {
     loop.stop()
+    if (tickTimer) clearInterval(tickTimer)
   })
 
   api.slots.register({
     order: 50,
     slots: {
-      sidebar_content(ctx, _props) {
+      sidebar_content(ctx: TuiSlotContext, _props: unknown) {
         const t = ctx.theme.current
+        const dim = options.dimColor ?? t.textMuted ?? "#546E7A"
+        const fg = options.headerColor ?? t.text ?? "#EEFFFF"
+        const valueFg = options.valueColor ?? "#82AAFF"
+
+        const s = state()
+
+        if (s.status === "not-configured") {
+          const hint = process.env.CLAUDE_CODE_OAUTH_TOKEN
+            ? "Token invalid or expired"
+            : "Set CLAUDE_CODE_OAUTH_TOKEN or run 'claude login'"
+          return (
+            <box flexDirection="column">
+              <box height={1}><text fg={CLAUDE_ORANGE}><b>{"Claude Usage"}</b></text></box>
+              <box height={1}>
+                <text fg={dim}>{hint}</text>
+              </box>
+            </box>
+          ) as any
+        }
+
+        if (s.status === "error" && !s.data) {
+          return (
+            <box flexDirection="column">
+              <box height={1}><text fg={CLAUDE_ORANGE}><b>{"Claude Usage"}</b></text></box>
+              <box height={1}>
+                <text fg={dim}>{"Failed to fetch usage"}</text>
+              </box>
+            </box>
+          ) as any
+        }
+
+        if ((s.status === "idle" || s.status === "loading") && !s.data) {
+          const remaining = countdown()
+          const msg = remaining > 0 ? `Loading in ${remaining}s...` : "Loading shortly..."
+          return (
+            <box flexDirection="column">
+              <box height={1}><text fg={CLAUDE_ORANGE}><b>{"Claude Usage"}</b></text></box>
+              <box height={1}>
+                <text fg={dim}>{msg}</text>
+              </box>
+            </box>
+          ) as any
+        }
+
+        const data = s.data
+        const profile = s.profile
+
         return (
-          <SidebarContent
-            state={state()}
-            options={options}
-            textColor={t.text.toString()}
-            mutedColor={t.textMuted.toString()}
-          />
-        )
+          <box flexDirection="column">
+            <box height={1}><text fg={CLAUDE_ORANGE}><b>{"Claude Usage"}</b></text></box>
+            {profile?.email ? (
+              <box height={1}>
+                <text fg={dim}>{profile.email}</text>
+              </box>
+            ) : null}
+
+            {profile?.email ? (
+              <box height={1}>
+                <text fg={dim}>{`via ${s.authMethod}`}</text>
+              </box>
+            ) : null}
+
+            {data ? (
+              <box flexDirection="column">
+                {WINDOW_KEYS.map((key) => {
+                  const w = data[key as WindowKey]
+                  if (!w) return null
+                  const pct = w.utilization
+                  const reset = w.resetsAt
+                  const label = windowLabel(key)
+                  const pctColor = pct === null ? fg
+                    : pct >= 80 ? CLAUDE_ORANGE
+                    : pct >= 51 ? "#F0A875"
+                    : fg
+                  const resetStr = formatRelativeTime(reset)
+                  return (
+                    <box height={1} flexDirection="row">
+                      <text fg={fg}>{label.padEnd(8)}</text>
+                      <text fg={pctColor}>{formatPercentage(pct).padStart(5)}</text>
+                      <text fg={dim}>{`  resets in ${resetStr}`}</text>
+                    </box>
+                  )
+                })}
+
+                {data.extraUsage?.isEnabled ? (
+                  <box height={1} flexDirection="row">
+                    <text fg={fg}>{"Credit  "}</text>
+                    <text fg={valueFg}>
+                      {formatCost(data.extraUsage.usedCredits, data.extraUsage.monthlyLimit, data.extraUsage.currency)}
+                    </text>
+                  </box>
+                ) : null}
+              </box>
+            ) : null}
+          </box>
+        ) as any
       },
     },
   })

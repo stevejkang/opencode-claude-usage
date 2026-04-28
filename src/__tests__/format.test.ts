@@ -60,12 +60,12 @@ describe("formatCost", () => {
 })
 
 describe("windowLabel", () => {
-  it("maps fiveHour → 5H", () => {
-    expect(windowLabel("fiveHour")).toBe("5H")
+  it("maps fiveHour → Session", () => {
+    expect(windowLabel("fiveHour")).toBe("Session")
   })
 
-  it("maps sevenDay → 7D", () => {
-    expect(windowLabel("sevenDay")).toBe("7D")
+  it("maps sevenDay → Weekly", () => {
+    expect(windowLabel("sevenDay")).toBe("Weekly")
   })
 
   it("maps sevenDaySonnet → Sonnet", () => {

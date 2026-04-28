@@ -58,6 +58,8 @@ export interface CLIProbeResult {
   weeklyPercent: number | null
   opusPercent: number | null
   sonnetPercent: number | null
+  sessionReset: string | null
+  weeklyReset: string | null
   email: string | null
   org: string | null
 }

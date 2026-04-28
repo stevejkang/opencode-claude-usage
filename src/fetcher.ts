@@ -1,3 +1,6 @@
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { readKeychainCredentials } from "./keychain.js"
 import { fetchOAuthUsage, fetchOAuthProfile } from "./oauth-client.js"
 import { extractSessionKey, fetchWebUsage } from "./cookie-reader.js"
@@ -10,6 +13,35 @@ interface FetchResult {
   authMethod: AuthMethod
 }
 
+const CACHE_DIR = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "opencode-claude-usage")
+const CACHE_FILE = join(CACHE_DIR, "last.json")
+const CACHE_MAX_AGE_MS = 10 * 60 * 1000
+
+interface CachedResult {
+  timestamp: number
+  result: FetchResult
+}
+
+function readCache(): FetchResult | null {
+  try {
+    const raw = readFileSync(CACHE_FILE, "utf8")
+    const cached = JSON.parse(raw) as CachedResult
+    if (Date.now() - cached.timestamp > CACHE_MAX_AGE_MS) return null
+    if (!cached.result?.usage) return null
+    return cached.result
+  } catch {
+    return null
+  }
+}
+
+function writeCache(result: FetchResult): void {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true })
+    const cached: CachedResult = { timestamp: Date.now(), result }
+    writeFileSync(CACHE_FILE, JSON.stringify(cached), "utf8")
+  } catch {}
+}
+
 /**
  * Fetch Claude usage data via 4-step fallback chain:
  * 1. OAuth API (only if user:profile scope available)
@@ -20,7 +52,23 @@ interface FetchResult {
  * Never throws. Always returns a FetchResult.
  */
 export async function fetchUsageData(): Promise<FetchResult> {
-  // ── Step 1: OAuth (only if user:profile scope) ──────────────────────
+  // ── Step 0: Environment variable token (works on all OS) ────────────
+  try {
+    const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+    if (envToken) {
+      const [usage, profile] = await Promise.all([
+        fetchOAuthUsage(envToken),
+        fetchOAuthProfile(envToken),
+      ])
+      if (usage) {
+        return { usage, profile, authMethod: "oauth" }
+      }
+    }
+  } catch {
+    // continue
+  }
+
+  // ── Step 1: OAuth via Keychain (macOS only) ─────────────────────────
   try {
     const credentials = await readKeychainCredentials()
     if (credentials?.hasProfileScope) {
@@ -50,10 +98,10 @@ export async function fetchUsageData(): Promise<FetchResult> {
         // Map CLIProbeResult → OAuthUsageResponse (best-effort)
         const usage: OAuthUsageResponse = {
           fiveHour: probeResult.sessionPercent !== null
-            ? { utilization: probeResult.sessionPercent, resetsAt: null }
+            ? { utilization: probeResult.sessionPercent, resetsAt: probeResult.sessionReset }
             : null,
           sevenDay: probeResult.weeklyPercent !== null
-            ? { utilization: probeResult.weeklyPercent, resetsAt: null }
+            ? { utilization: probeResult.weeklyPercent, resetsAt: probeResult.weeklyReset }
             : null,
           sevenDaySonnet: probeResult.sonnetPercent !== null
             ? { utilization: probeResult.sonnetPercent, resetsAt: null }
@@ -98,6 +146,7 @@ export async function fetchUsageData(): Promise<FetchResult> {
   return { usage: null, profile: null, authMethod: "none" }
 }
 
+
 /**
  * Create a refresh loop that calls fetchUsageData() on an interval.
  * Prevents duplicate concurrent fetches with a refreshing flag.
@@ -109,32 +158,70 @@ export function createRefreshLoop(
 ): { start: () => void; stop: () => void } {
   let timer: ReturnType<typeof setInterval> | null = null
   let refreshing = false
+  let lastData: UsageState["data"] = null
+  let lastProfile: UsageState["profile"] = null
+  let lastAuthMethod: UsageState["authMethod"] = "none"
+  let isFirstRun = true
 
   async function refresh(): Promise<void> {
     if (refreshing) return
     refreshing = true
 
-    // Set loading state (preserving previous data to avoid flicker)
-    setState({
-      status: "loading",
-      data: null,
-      profile: null,
-      authMethod: "none",
-      error: null,
-    })
+    if (isFirstRun) {
+      const cached = readCache()
+      if (cached && cached.usage) {
+        lastData = cached.usage
+        lastProfile = cached.profile
+        lastAuthMethod = cached.authMethod
+        setState({
+          status: "success",
+          data: cached.usage,
+          profile: cached.profile,
+          authMethod: cached.authMethod,
+          error: null,
+        })
+      }
+    }
+
+    if (!lastData) {
+      setState({
+        status: "loading",
+        data: null,
+        profile: null,
+        authMethod: "none",
+        error: null,
+      })
+    }
 
     try {
       const result = await fetchUsageData()
 
       if (result.authMethod === "none") {
-        setState({
-          status: "not-configured",
-          data: null,
-          profile: null,
-          authMethod: "none",
-          error: null,
-        })
+        if (lastData) {
+          setState({
+            status: "success",
+            data: lastData,
+            profile: lastProfile,
+            authMethod: lastAuthMethod,
+            error: null,
+          })
+        } else {
+          lastData = null
+          lastProfile = null
+          lastAuthMethod = "none"
+          setState({
+            status: "not-configured",
+            data: null,
+            profile: null,
+            authMethod: "none",
+            error: null,
+          })
+        }
       } else {
+        lastData = result.usage
+        lastProfile = result.profile
+        lastAuthMethod = result.authMethod
+        writeCache(result)
         setState({
           status: "success",
           data: result.usage,
@@ -153,6 +240,7 @@ export function createRefreshLoop(
       })
     } finally {
       refreshing = false
+      isFirstRun = false
     }
   }
 
