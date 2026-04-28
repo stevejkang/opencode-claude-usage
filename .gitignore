@@ -1,2 +1,9 @@
 # macOS
 .DS_Store
+
+# AI
+.sisyphus
+AGENTS.md
+findings.md
+progress.md
+task_plan.md
