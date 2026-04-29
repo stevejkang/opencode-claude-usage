@@ -6,6 +6,12 @@
   "exports": {
     "./tui": "./src/tui.tsx"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stevejkang/opencode-claude-usage.git"
+  },
+  "author": "stevejkang",
+  "license": "MIT",
   "files": [
     "src/tui.tsx",
     "src/types.ts",
