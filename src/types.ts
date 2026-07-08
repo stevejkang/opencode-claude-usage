@@ -12,6 +12,21 @@ export interface OAuthExtraUsage {
   currency: string | null
 }
 
+export interface LimitScope {
+  model: { id: string | null; displayName: string } | null
+  surface: string | null
+}
+
+export interface LimitEntry {
+  kind: string
+  group: string
+  percent: number
+  severity: string
+  resetsAt: string | null
+  scope: LimitScope | null
+  isActive: boolean
+}
+
 export interface OAuthUsageResponse {
   fiveHour: OAuthUsageWindow | null
   sevenDay: OAuthUsageWindow | null
@@ -21,6 +36,7 @@ export interface OAuthUsageResponse {
   sevenDayRoutines: OAuthUsageWindow | null
   sevenDayOAuthApps: OAuthUsageWindow | null
   extraUsage: OAuthExtraUsage | null
+  limits: LimitEntry[] | null
 }
 
 // Profile response

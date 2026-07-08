@@ -205,3 +205,15 @@ export function windowLabel(key: string): string {
   }
   return labels[key] ?? key
 }
+
+export function limitLabel(
+  kind: string,
+  scope: { model?: { displayName?: string } | null } | null | undefined,
+): string {
+  if (scope?.model?.displayName) return scope.model.displayName
+  const labels: Record<string, string> = {
+    session: "Session",
+    weekly_all: "Weekly",
+  }
+  return labels[kind] ?? kind
+}

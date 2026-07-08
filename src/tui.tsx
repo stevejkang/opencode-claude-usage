@@ -3,7 +3,7 @@ import { createSignal } from "solid-js"
 import type { TuiPlugin, TuiPluginModule, TuiSlotContext } from "@opencode-ai/plugin/tui"
 import type { UsageState, PluginOptions } from "./types"
 import { createRefreshLoop } from "./fetcher"
-import { formatRelativeTime, formatPercentage, formatBar, formatCost, windowLabel } from "./format"
+import { formatRelativeTime, formatPercentage, formatBar, formatCost, windowLabel, limitLabel } from "./format"
 
 const CLAUDE_ORANGE = "#E07A3A"
 
@@ -139,38 +139,81 @@ const tui: TuiPlugin = async (api, rawOptions, _meta) => {
 
                 {data ? (
                   <box flexDirection="column">
-                    {WINDOW_KEYS.map((key) => {
-                      const w = data[key as WindowKey]
-                      if (!w) return null
-                      const pct = w.utilization
-                      const label = windowLabel(key)
-                      const pctColor = pct === null ? valueFg
-                        : pct >= 80 ? CLAUDE_ORANGE
-                        : pct >= 51 ? "#F0A875"
-                        : valueFg
+                    {data.limits && data.limits.length > 0 ? (
+                      data.limits.map((limit) => {
+                        const label = limitLabel(limit.kind, limit.scope)
+                        const notStarted = limit.percent === 0 && !limit.resetsAt
+                        const pct = limit.percent
+                        const pctColor = notStarted ? dim
+                          : pct >= 80 ? CLAUDE_ORANGE
+                          : pct >= 51 ? "#F0A875"
+                          : valueFg
 
-                      if (displayMode === "bar") {
-                        const bar = formatBar(pct)
-                        const resetStr = formatRelativeTime(w.resetsAt)
-                        const resetSuffix = resetStr && resetStr !== "—" ? ` (${resetStr})` : ""
+                        if (notStarted) {
+                          return (
+                            <box height={1} flexDirection="row">
+                              <text fg={fg}>{` ${label.padEnd(displayMode === "bar" ? 8 : 9)}`}</text>
+                              <text fg={dim}>{"    not started yet"}</text>
+                            </box>
+                          )
+                        }
+
+                        if (displayMode === "bar") {
+                          const bar = formatBar(pct)
+                          const resetStr = formatRelativeTime(limit.resetsAt)
+                          const resetSuffix = resetStr && resetStr !== "—" ? ` (${resetStr})` : ""
+                          return (
+                            <box height={1} flexDirection="row">
+                              <text fg={fg}>{` ${label.padEnd(8)}`}</text>
+                              <text fg={pctColor}>{bar.filled + bar.empty + formatPercentage(pct).padStart(4)}</text>
+                              <text fg={dim}>{resetSuffix}</text>
+                            </box>
+                          )
+                        }
+
+                        const resetStr = formatRelativeTime(limit.resetsAt)
                         return (
                           <box height={1} flexDirection="row">
-                            <text fg={fg}>{` ${label.padEnd(8)}`}</text>
-                            <text fg={pctColor}>{bar.filled + bar.empty + formatPercentage(pct).padStart(4)}</text>
-                            <text fg={dim}>{resetSuffix}</text>
+                            <text fg={fg}>{` ${label.padEnd(9)}`}</text>
+                            <text fg={pctColor}>{formatPercentage(pct).padStart(5)}</text>
+                            <text fg={dim}>{`  resets in ${resetStr}`}</text>
                           </box>
                         )
-                      }
+                      })
+                    ) : (
+                      WINDOW_KEYS.map((key) => {
+                        const w = data[key as WindowKey]
+                        if (!w) return null
+                        const pct = w.utilization
+                        const label = windowLabel(key)
+                        const pctColor = pct === null ? valueFg
+                          : pct >= 80 ? CLAUDE_ORANGE
+                          : pct >= 51 ? "#F0A875"
+                          : valueFg
 
-                      const resetStr = formatRelativeTime(w.resetsAt)
-                      return (
-                        <box height={1} flexDirection="row">
-                          <text fg={fg}>{` ${label.padEnd(9)}`}</text>
-                          <text fg={pctColor}>{formatPercentage(pct).padStart(5)}</text>
-                          <text fg={dim}>{`  resets in ${resetStr}`}</text>
-                        </box>
-                      )
-                    })}
+                        if (displayMode === "bar") {
+                          const bar = formatBar(pct)
+                          const resetStr = formatRelativeTime(w.resetsAt)
+                          const resetSuffix = resetStr && resetStr !== "—" ? ` (${resetStr})` : ""
+                          return (
+                            <box height={1} flexDirection="row">
+                              <text fg={fg}>{` ${label.padEnd(8)}`}</text>
+                              <text fg={pctColor}>{bar.filled + bar.empty + formatPercentage(pct).padStart(4)}</text>
+                              <text fg={dim}>{resetSuffix}</text>
+                            </box>
+                          )
+                        }
+
+                        const resetStr = formatRelativeTime(w.resetsAt)
+                        return (
+                          <box height={1} flexDirection="row">
+                            <text fg={fg}>{` ${label.padEnd(9)}`}</text>
+                            <text fg={pctColor}>{formatPercentage(pct).padStart(5)}</text>
+                            <text fg={dim}>{`  resets in ${resetStr}`}</text>
+                          </box>
+                        )
+                      })
+                    )}
 
                     {data.extraUsage?.isEnabled ? (
                       <box height={1} flexDirection="row">

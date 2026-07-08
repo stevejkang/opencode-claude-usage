@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { formatRelativeTime, formatPercentage, formatCost, windowLabel } from "../format.js"
+import { formatRelativeTime, formatPercentage, formatCost, windowLabel, limitLabel } from "../format.js"
 
 describe("formatRelativeTime", () => {
   it("returns — for null input", () => {
@@ -74,5 +74,31 @@ describe("windowLabel", () => {
 
   it("maps sevenDayOpus → Opus", () => {
     expect(windowLabel("sevenDayOpus")).toBe("Opus")
+  })
+})
+
+describe("limitLabel", () => {
+  it("maps session → Session", () => {
+    expect(limitLabel("session", null)).toBe("Session")
+  })
+
+  it("maps weekly_all → Weekly", () => {
+    expect(limitLabel("weekly_all", null)).toBe("Weekly")
+  })
+
+  it("uses scope.model.displayName when available", () => {
+    expect(limitLabel("weekly_scoped", { model: { displayName: "Fable" } })).toBe("Fable")
+  })
+
+  it("prefers displayName over kind mapping", () => {
+    expect(limitLabel("session", { model: { displayName: "Custom" } })).toBe("Custom")
+  })
+
+  it("falls back to raw kind for unknown kinds", () => {
+    expect(limitLabel("unknown_kind", null)).toBe("unknown_kind")
+  })
+
+  it("handles scope with null model", () => {
+    expect(limitLabel("session", { model: null })).toBe("Session")
   })
 })

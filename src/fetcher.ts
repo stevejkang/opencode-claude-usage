@@ -150,6 +150,7 @@ export async function fetchUsageData(): Promise<FetchResult> {
           sevenDayRoutines: null,
           sevenDayOAuthApps: null,
           extraUsage: null,
+          limits: null,
         }
 
         const profile: ProfileResponse | null = statusResult
