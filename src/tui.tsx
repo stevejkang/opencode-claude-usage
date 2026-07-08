@@ -174,7 +174,7 @@ const tui: TuiPlugin = async (api, rawOptions, _meta) => {
 
                     {data.extraUsage?.isEnabled ? (
                       <box height={1} flexDirection="row">
-                        <text fg={fg}>{"Credit  "}</text>
+                        <text fg={fg}>{` ${"Credit".padEnd(9)}`}</text>
                         <text fg={valueFg}>
                           {formatCost(data.extraUsage.usedCredits, data.extraUsage.monthlyLimit, data.extraUsage.currency)}
                         </text>
