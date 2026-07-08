@@ -145,26 +145,31 @@ export function formatPercentage(utilization: number | null | undefined): string
   return `${Math.round(utilization)}%`
 }
 
-/**
- * Format credit usage as "$X.XX / $Y.YY".
- * All values are in cents (divide by 100 for dollars).
- * Returns "—" if any value is null.
- */
-export function formatCost(
+export interface CreditDisplay {
+  usedStr: string
+  remainingStr: string
+  percent: number
+  isInactive: boolean
+}
+
+export function formatCreditDisplay(
   usedCents: number | null | undefined,
   limitCents: number | null | undefined,
   currency: string | null | undefined,
-): string {
+): CreditDisplay | null {
   if (
     usedCents === null || usedCents === undefined ||
     limitCents === null || limitCents === undefined
   ) {
-    return "—"
+    return null
   }
   const symbol = currency === "USD" ? "$" : (currency ?? "$")
-  const used = (usedCents / 100).toFixed(2)
-  const limit = (limitCents / 100).toFixed(2)
-  return `${symbol}${used} / ${symbol}${limit}`
+  const usedStr = `${symbol}${(usedCents / 100).toFixed(2)}`
+  const remCents = Math.max(0, limitCents - usedCents)
+  const remainingStr = `${symbol}${(remCents / 100).toFixed(2)}`
+  const isInactive = usedCents === 0 && limitCents === 0
+  const percent = limitCents > 0 ? (usedCents / limitCents) * 100 : 100
+  return { usedStr, remainingStr, percent, isInactive }
 }
 
 /**
@@ -204,4 +209,20 @@ export function windowLabel(key: string): string {
     sevenDayOAuthApps: "Apps",
   }
   return labels[key] ?? key
+}
+
+export function isLimitInactive(percent: number, resetsAt: string | null | undefined): boolean {
+  return percent === 0 && !resetsAt
+}
+
+export function limitLabel(
+  kind: string,
+  scope: { model?: { displayName?: string } | null } | null | undefined,
+): string {
+  if (scope?.model?.displayName) return scope.model.displayName
+  const labels: Record<string, string> = {
+    session: "Session",
+    weekly_all: "Weekly",
+  }
+  return labels[kind] ?? kind
 }
