@@ -274,7 +274,7 @@ export async function fetchUsageData(): Promise<FetchResult> {
             (s) => s ? { email: s.email, plan: s.org } : null,
           )
 
-        return { usage, profile, authMethod: oauthProfile ? "oauth" : "cli" }
+        return { usage, profile, authMethod: "cli" }
       }
     }
   } catch {
@@ -287,7 +287,7 @@ export async function fetchUsageData(): Promise<FetchResult> {
     if (sessionKey) {
       const usage = await fetchWebUsage(sessionKey)
       if (usage) {
-        return { usage, profile: oauthProfile, authMethod: oauthProfile ? "oauth" : "cookie" }
+        return { usage, profile: oauthProfile, authMethod: "cookie" }
       }
     }
   } catch {
