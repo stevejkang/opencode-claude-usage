@@ -77,13 +77,19 @@ export async function fetchOAuthProfile(accessToken: string): Promise<ProfileRes
     const raw = await response.json() as Record<string, unknown>
     const converted = snakeToCamel(raw) as Record<string, unknown>
 
-    const email = typeof converted.email === "string" ? converted.email : null
+    const account = converted.account as Record<string, unknown> | undefined
+    const org = converted.organization as Record<string, unknown> | undefined
+
+    const email = typeof account?.email === "string" ? account.email
+      : typeof converted.email === "string" ? converted.email
+      : null
     if (!email) return null
 
-    return {
-      email,
-      plan: typeof converted.subscriptionType === "string" ? converted.subscriptionType : null,
-    }
+    const plan = typeof org?.subscriptionStatus === "string" ? org.subscriptionStatus
+      : typeof converted.subscriptionType === "string" ? converted.subscriptionType
+      : null
+
+    return { email, plan }
   } catch {
     return null
   }
