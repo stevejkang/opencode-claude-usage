@@ -23,16 +23,28 @@ describe("fetchOAuthUsage", () => {
     vi.stubGlobal("fetch", vi.fn())
   })
 
-  it("returns null on 401 response", async () => {
+  it("returns failed on 401 response", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 401 }))
     const result = await fetchOAuthUsage("invalid-token")
-    expect(result).toBeNull()
+    expect(result.status).toBe("failed")
   })
 
-  it("returns null on 403 response", async () => {
+  it("returns failed on 403 response", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 403 }))
     const result = await fetchOAuthUsage("scope-missing-token")
-    expect(result).toBeNull()
+    expect(result.status).toBe("failed")
+  })
+
+  it("returns rate_limited on 429 response with retry-after", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(
+      JSON.stringify({ error: { type: "rate_limit_error" } }),
+      { status: 429, headers: { "retry-after": "120" } },
+    ))
+    const result = await fetchOAuthUsage("valid-token")
+    expect(result.status).toBe("rate_limited")
+    if (result.status === "rate_limited") {
+      expect(result.retryAfterMs).toBe(120_000)
+    }
   })
 
   it("parses valid usage response with snake_case conversion", async () => {
@@ -42,8 +54,10 @@ describe("fetchOAuthUsage", () => {
     })
     vi.mocked(fetch).mockResolvedValue(new Response(rawBody, { status: 200 }))
     const result = await fetchOAuthUsage("valid-token")
-    expect(result).not.toBeNull()
-    expect(result?.fiveHour?.utilization).toBe(45)
-    expect(result?.sevenDay?.utilization).toBe(62)
+    expect(result.status).toBe("success")
+    if (result.status === "success") {
+      expect(result.data.fiveHour?.utilization).toBe(45)
+      expect(result.data.sevenDay?.utilization).toBe(62)
+    }
   })
 })

@@ -13,7 +13,7 @@ function formatRelativeMs(diffMs: number): string {
 
 function parseResetString(text: string): number | null {
   let raw = text.trim()
-  if (!/^resets/i.test(raw)) return null
+  if (!raw) return null
 
   raw = raw.replace(/^resets?\s*/i, "")
 
@@ -131,7 +131,7 @@ export function formatRelativeTime(isoString: string | null | undefined): string
   const now = Date.now()
   const target = new Date(isoString).getTime()
 
-  if (Number.isNaN(target)) return isoString
+  if (Number.isNaN(target)) return "—"
 
   return formatRelativeMs(target - now)
 }

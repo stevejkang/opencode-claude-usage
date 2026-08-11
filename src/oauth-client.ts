@@ -1,4 +1,4 @@
-import type { OAuthUsageResponse, ProfileResponse } from "./types"
+import type { OAuthUsageResponse, OAuthUsageResult, ProfileResponse } from "./types"
 
 const BASE_URL = "https://api.anthropic.com"
 const BETA_HEADER = "oauth-2025-04-20"
@@ -47,22 +47,53 @@ export function snakeToCamel(obj: unknown): unknown {
   return obj
 }
 
-/**
- * Fetch Claude usage data via OAuth API.
- * Requires user:profile scope — returns null on 401/403.
- */
-export async function fetchOAuthUsage(accessToken: string): Promise<OAuthUsageResponse | null> {
+function normalizeWindow(w: unknown): unknown {
+  if (w === null || typeof w !== "object") return w
+  const obj = w as Record<string, unknown>
+  if (obj.utilization === undefined && typeof obj.usedPercentage === "number") {
+    obj.utilization = obj.usedPercentage
+  }
+  return obj
+}
+
+function normalizeUsageResponse(raw: Record<string, unknown>): OAuthUsageResponse {
+  const windowKeys = [
+    "fiveHour", "sevenDay", "sevenDaySonnet", "sevenDayOpus",
+    "sevenDayDesign", "sevenDayRoutines", "sevenDayOAuthApps",
+  ]
+  for (const key of windowKeys) {
+    if (raw[key]) raw[key] = normalizeWindow(raw[key])
+  }
+  if (Array.isArray(raw.limits)) {
+    raw.limits = (raw.limits as Record<string, unknown>[]).map((entry) => {
+      if (entry.percent === undefined && typeof entry.usedPercentage === "number") {
+        entry.percent = entry.usedPercentage
+      }
+      return entry
+    })
+  }
+  return raw as unknown as OAuthUsageResponse
+}
+
+export async function fetchOAuthUsage(accessToken: string): Promise<OAuthUsageResult> {
   try {
     const response = await fetchWithTimeout(
       `${BASE_URL}/api/oauth/usage`,
       makeHeaders(accessToken),
     )
-    if (!response || !response.ok) return null
+    if (!response) return { status: "failed" }
+
+    if (response.status === 429) {
+      const retryAfter = Number.parseInt(response.headers.get("retry-after") ?? "0", 10)
+      return { status: "rate_limited", retryAfterMs: retryAfter > 0 ? retryAfter * 1000 : 60_000 }
+    }
+
+    if (!response.ok) return { status: "failed" }
 
     const raw = await response.json() as Record<string, unknown>
-    return snakeToCamel(raw) as OAuthUsageResponse
+    return { status: "success", data: normalizeUsageResponse(snakeToCamel(raw) as Record<string, unknown>) }
   } catch {
-    return null
+    return { status: "failed" }
   }
 }
 

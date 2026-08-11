@@ -5,7 +5,7 @@ import { readKeychainCredentials, readCredentialsFile, readOpenCodeAuth, refresh
 import { fetchOAuthUsage, fetchOAuthProfile } from "./oauth-client"
 import { extractSessionKey, fetchWebUsage } from "./cookie-reader"
 import { detectClaude, probeCLIUsage, probeStatus } from "./cli-probe"
-import type { UsageState, OAuthUsageResponse, ProfileResponse, AuthMethod } from "./types"
+import type { UsageState, OAuthUsageResponse, OAuthUsageResult, LimitEntry, ProfileResponse, AuthMethod } from "./types"
 
 interface FetchResult {
   usage: OAuthUsageResponse | null
@@ -19,15 +19,17 @@ const CACHE_MAX_AGE_MS = 10 * 60 * 1000
 
 interface CachedResult {
   timestamp: number
+  email: string | null
   result: FetchResult
 }
 
-function readCache(): FetchResult | null {
+function readCache(email?: string | null): FetchResult | null {
   try {
     const raw = readFileSync(CACHE_FILE, "utf8")
     const cached = JSON.parse(raw) as CachedResult
     if (Date.now() - cached.timestamp > CACHE_MAX_AGE_MS) return null
     if (!cached.result?.usage) return null
+    if (email && cached.email && cached.email !== email) return null
     return cached.result
   } catch {
     return null
@@ -37,7 +39,11 @@ function readCache(): FetchResult | null {
 function writeCache(result: FetchResult): void {
   try {
     mkdirSync(CACHE_DIR, { recursive: true })
-    const cached: CachedResult = { timestamp: Date.now(), result }
+    const cached: CachedResult = {
+      timestamp: Date.now(),
+      email: result.profile?.email ?? null,
+      result,
+    }
     const tmpFile = `${CACHE_FILE}.${process.pid}.tmp`
     writeFileSync(tmpFile, JSON.stringify(cached), { encoding: "utf8", mode: 0o600 })
     renameSync(tmpFile, CACHE_FILE)
@@ -57,33 +63,150 @@ function writeCache(result: FetchResult): void {
  */
 const failedTokens = new Set<string>()
 let lastRefreshedToken: string | null = null
+let rateLimitedUntil = 0
+let lastOAuthUsage: OAuthUsageResponse | null = null
 
-async function tryOAuthToken(token: string): Promise<FetchResult | null> {
-  if (failedTokens.has(token)) return null
+export function resetAuthState(): void {
+  failedTokens.clear()
+  lastRefreshedToken = null
+  rateLimitedUntil = 0
+  lastOAuthUsage = null
+}
+
+type TryOAuthResult =
+  | { ok: true; result: FetchResult }
+  | { ok: false; rateLimited: boolean; profile: ProfileResponse | null }
+
+async function tryOAuthToken(token: string): Promise<TryOAuthResult> {
+  if (failedTokens.has(token)) return { ok: false, rateLimited: false, profile: null }
+
+  if (Date.now() < rateLimitedUntil) {
+    const profile = await fetchOAuthProfile(token)
+    return { ok: false, rateLimited: true, profile }
+  }
+
   try {
-    const [usage, profile] = await Promise.all([
+    const [usageResult, profile] = await Promise.all([
       fetchOAuthUsage(token),
       fetchOAuthProfile(token),
     ])
-    if (usage) {
-      return { usage, profile, authMethod: "oauth" }
+
+    if (usageResult.status === "success") {
+      rateLimitedUntil = 0
+      lastOAuthUsage = usageResult.data
+      return { ok: true, result: { usage: usageResult.data, profile, authMethod: "oauth" } }
     }
+
+    if (usageResult.status === "rate_limited") {
+      rateLimitedUntil = Date.now() + usageResult.retryAfterMs
+      return { ok: false, rateLimited: true, profile }
+    }
+
     failedTokens.add(token)
+    return { ok: false, rateLimited: false, profile: null }
   } catch {
     failedTokens.add(token)
+    return { ok: false, rateLimited: false, profile: null }
   }
-  return null
+}
+
+function mapCLIProbeToUsage(
+  probeResult: NonNullable<Awaited<ReturnType<typeof probeCLIUsage>>>,
+): OAuthUsageResponse {
+  if (lastOAuthUsage) {
+    return patchOAuthWithCLI(lastOAuthUsage, probeResult)
+  }
+  return buildLimitsFromCLI(probeResult)
+}
+
+function patchOAuthWithCLI(
+  oauth: OAuthUsageResponse,
+  cli: NonNullable<Awaited<ReturnType<typeof probeCLIUsage>>>,
+): OAuthUsageResponse {
+  const limits = oauth.limits ? oauth.limits.map((entry) => {
+    if (entry.kind === "session" && cli.sessionPercent !== null) {
+      return { ...entry, percent: cli.sessionPercent, resetsAt: cli.sessionReset ?? entry.resetsAt }
+    }
+    if (entry.kind === "weekly_all" && cli.weeklyPercent !== null) {
+      return { ...entry, percent: cli.weeklyPercent, resetsAt: cli.weeklyReset ?? entry.resetsAt }
+    }
+    const modelName = entry.scope?.model?.displayName?.toLowerCase()
+    if (entry.kind === "weekly_scoped" && modelName) {
+      const cliModel = cli.scopedModels.find((m) => m.displayName.toLowerCase() === modelName)
+      if (cliModel) {
+        return { ...entry, percent: cliModel.percent, resetsAt: cliModel.resetsAt ?? entry.resetsAt }
+      }
+    }
+    return entry
+  }) : null
+
+  return {
+    ...oauth,
+    fiveHour: cli.sessionPercent !== null
+      ? { utilization: cli.sessionPercent, resetsAt: cli.sessionReset ?? oauth.fiveHour?.resetsAt ?? null }
+      : oauth.fiveHour,
+    sevenDay: cli.weeklyPercent !== null
+      ? { utilization: cli.weeklyPercent, resetsAt: cli.weeklyReset ?? oauth.sevenDay?.resetsAt ?? null }
+      : oauth.sevenDay,
+    limits,
+  }
+}
+
+function buildLimitsFromCLI(
+  probeResult: NonNullable<Awaited<ReturnType<typeof probeCLIUsage>>>,
+): OAuthUsageResponse {
+  const limits: LimitEntry[] = []
+
+  if (probeResult.sessionPercent !== null) {
+    limits.push({
+      kind: "session", group: "session", percent: probeResult.sessionPercent,
+      severity: "normal", resetsAt: probeResult.sessionReset, scope: null, isActive: true,
+    })
+  }
+
+  if (probeResult.weeklyPercent !== null) {
+    limits.push({
+      kind: "weekly_all", group: "weekly", percent: probeResult.weeklyPercent,
+      severity: "normal", resetsAt: probeResult.weeklyReset, scope: null,
+      isActive: probeResult.weeklyPercent > 0 || probeResult.weeklyReset !== null,
+    })
+  }
+
+  for (const model of probeResult.scopedModels) {
+    limits.push({
+      kind: "weekly_scoped", group: "weekly", percent: model.percent,
+      severity: "normal", resetsAt: model.resetsAt,
+      scope: { model: { id: null, displayName: model.displayName }, surface: null },
+      isActive: model.percent > 0 || model.resetsAt !== null,
+    })
+  }
+
+  return {
+    fiveHour: probeResult.sessionPercent !== null
+      ? { utilization: probeResult.sessionPercent, resetsAt: probeResult.sessionReset }
+      : null,
+    sevenDay: probeResult.weeklyPercent !== null
+      ? { utilization: probeResult.weeklyPercent, resetsAt: probeResult.weeklyReset }
+      : null,
+    sevenDaySonnet: null, sevenDayOpus: null, sevenDayDesign: null,
+    sevenDayRoutines: null, sevenDayOAuthApps: null, extraUsage: null, limits,
+  }
 }
 
 export async function fetchUsageData(): Promise<FetchResult> {
   failedTokens.clear()
 
+  let oauthProfile: ProfileResponse | null = null
+  let wasRateLimited = false
+
   // ── Step 0: Environment variable token (works on all OS)
   try {
     const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
     if (envToken) {
-      const result = await tryOAuthToken(envToken)
-      if (result) return result
+      const attempt = await tryOAuthToken(envToken)
+      if (attempt.ok) return attempt.result
+      if (attempt.rateLimited) wasRateLimited = true
+      if (attempt.profile) oauthProfile = attempt.profile
     }
   } catch {}
 
@@ -91,8 +214,10 @@ export async function fetchUsageData(): Promise<FetchResult> {
   try {
     const fileCreds = readCredentialsFile()
     if (fileCreds) {
-      const result = await tryOAuthToken(fileCreds.accessToken)
-      if (result) return result
+      const attempt = await tryOAuthToken(fileCreds.accessToken)
+      if (attempt.ok) return attempt.result
+      if (attempt.rateLimited) wasRateLimited = true
+      if (attempt.profile) oauthProfile = attempt.profile
     }
   } catch {}
 
@@ -108,8 +233,10 @@ export async function fetchUsageData(): Promise<FetchResult> {
           lastRefreshedToken = token
         }
       }
-      const result = await tryOAuthToken(token)
-      if (result) return result
+      const attempt = await tryOAuthToken(token)
+      if (attempt.ok) return attempt.result
+      if (attempt.rateLimited) wasRateLimited = true
+      if (attempt.profile) oauthProfile = attempt.profile
     }
   } catch {}
 
@@ -117,50 +244,37 @@ export async function fetchUsageData(): Promise<FetchResult> {
   try {
     const credentials = await readKeychainCredentials()
     if (credentials?.hasProfileScope) {
-      const result = await tryOAuthToken(credentials.accessToken)
-      if (result) return result
+      const attempt = await tryOAuthToken(credentials.accessToken)
+      if (attempt.ok) return attempt.result
+      if (attempt.rateLimited) wasRateLimited = true
+      if (attempt.profile) oauthProfile = attempt.profile
     }
   } catch {}
+
+  // ── Rate-limited but have previous OAuth data → reuse it
+  if (wasRateLimited && lastOAuthUsage) {
+    return {
+      usage: lastOAuthUsage,
+      profile: oauthProfile,
+      authMethod: "oauth",
+    }
+  }
 
   // ── Step 4: CLI PTY probe (macOS/Linux, primary when OAuth unavailable)
   try {
     const installed = await detectClaude()
     if (installed) {
-      const [probeResult, statusResult] = await Promise.all([
-        probeCLIUsage(),
-        probeStatus(),
-      ])
+      const probeResult = await probeCLIUsage()
 
       if (probeResult) {
-        // Map CLIProbeResult → OAuthUsageResponse (best-effort)
-        const usage: OAuthUsageResponse = {
-          fiveHour: probeResult.sessionPercent !== null
-            ? { utilization: probeResult.sessionPercent, resetsAt: probeResult.sessionReset }
-            : null,
-          sevenDay: probeResult.weeklyPercent !== null
-            ? { utilization: probeResult.weeklyPercent, resetsAt: probeResult.weeklyReset }
-            : null,
-          sevenDaySonnet: probeResult.sonnetPercent !== null
-            ? { utilization: probeResult.sonnetPercent, resetsAt: null }
-            : null,
-          sevenDayOpus: probeResult.opusPercent !== null
-            ? { utilization: probeResult.opusPercent, resetsAt: null }
-            : null,
-          sevenDayDesign: null,
-          sevenDayRoutines: null,
-          sevenDayOAuthApps: null,
-          extraUsage: null,
-          limits: null,
-        }
+        const usage = mapCLIProbeToUsage(probeResult)
 
-        const profile: ProfileResponse | null = statusResult
-          ? {
-              email: statusResult.email,
-              plan: statusResult.org,
-            }
-          : null
+        const profile: ProfileResponse | null = oauthProfile
+          ?? await probeStatus().then(
+            (s) => s ? { email: s.email, plan: s.org } : null,
+          )
 
-        return { usage, profile, authMethod: "cli" }
+        return { usage, profile, authMethod: oauthProfile ? "oauth" : "cli" }
       }
     }
   } catch {
@@ -173,14 +287,13 @@ export async function fetchUsageData(): Promise<FetchResult> {
     if (sessionKey) {
       const usage = await fetchWebUsage(sessionKey)
       if (usage) {
-        return { usage, profile: null, authMethod: "cookie" }
+        return { usage, profile: oauthProfile, authMethod: oauthProfile ? "oauth" : "cookie" }
       }
     }
   } catch {
     // continue
   }
 
-  // ── All failed ───────────────────────────────────────────────────────
   return { usage: null, profile: null, authMethod: "none" }
 }
 
@@ -211,6 +324,9 @@ export function createRefreshLoop(
         lastData = cached.usage
         lastProfile = cached.profile
         lastAuthMethod = cached.authMethod
+        if (cached.authMethod === "oauth") {
+          lastOAuthUsage = cached.usage
+        }
         setState({
           status: "success",
           data: cached.usage,

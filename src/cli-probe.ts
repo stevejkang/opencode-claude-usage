@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process"
 import { writeFileSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { CLIProbeResult } from "./types"
+import type { CLIProbeResult, CLIScopedModel } from "./types"
 
 const PROBE_TIMEOUT_MS = 25_000
 const DETECT_TIMEOUT_MS = 5_000
@@ -59,7 +59,7 @@ function buildPtyScript(claudeBinary: string): string {
     throw new Error("Unsafe claude binary path")
   }
   return `
-import pty, os, sys, select, time, signal, re
+import pty, os, sys, select, time, signal, re, fcntl, termios, struct
 
 STOP_NEEDLES = ["current session", "current week", "failed to load usage data"]
 STARTUP_DELAY = 1.5
@@ -75,6 +75,7 @@ def normalize(data):
     return strip_ansi(data).lower().replace(' ', '')
 
 fd_primary, fd_secondary = pty.openpty()
+fcntl.ioctl(fd_secondary, termios.TIOCSWINSZ, struct.pack('HHHH', 200, 120, 0, 0))
 pid = os.fork()
 
 if pid == 0:
@@ -234,7 +235,8 @@ function extractResetByLabel(lines: string[], label: string): string | null {
         const lower = lines[j].toLowerCase()
         const resetIdx = lower.indexOf("resets")
         if (resetIdx >= 0) {
-          return lines[j].slice(resetIdx).replace(/[\r\n]+/g, "").trim()
+          const raw = lines[j].slice(resetIdx).replace(/[\r\n]+/g, "").trim()
+          return raw.replace(/^resets?\s*/i, "").trim() || null
         }
       }
     }
@@ -242,10 +244,40 @@ function extractResetByLabel(lines: string[], label: string): string | null {
   return null
 }
 
+const KNOWN_WEEKLY_LABELS = new Set([
+  "current week (all models)",
+  "current week",
+  "current week (opus)",
+  "current week (sonnet)",
+])
+
+function extractScopedModels(lines: string[]): CLIScopedModel[] {
+  const models: CLIScopedModel[] = []
+  const seen = new Set<string>()
+  const pattern = /^current\s+week\s+\(([^)]+)\)$/i
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim()
+    const match = trimmed.match(pattern)
+    if (!match) continue
+    if (KNOWN_WEEKLY_LABELS.has(trimmed.toLowerCase())) continue
+
+    const displayName = match[1]
+    if (seen.has(displayName.toLowerCase())) continue
+    seen.add(displayName.toLowerCase())
+
+    const label = `Current week (${displayName})`
+    const percent = extractPercentByLabel(lines, label)
+    const resetsAt = extractResetByLabel(lines, label)
+    models.push({ displayName, percent: percent ?? 0, resetsAt })
+  }
+  return models
+}
+
 function parseUsageOutput(rawOutput: string): Partial<CLIProbeResult> {
   const clean = stripAnsiCodes(rawOutput)
   const panel = trimToLatestUsagePanel(clean)
-  const lines = panel.split("\n")
+  const lines = panel.split(/[\r\n]+/).filter((l) => l.length > 0)
 
   let sessionPercent = extractPercentByLabel(lines, "Current session")
   let weeklyPercent = extractPercentByLabel(lines, "Current week (all models)") ??
@@ -257,13 +289,15 @@ function parseUsageOutput(rawOutput: string): Partial<CLIProbeResult> {
   const weeklyReset = extractResetByLabel(lines, "Current week (all models)") ??
     extractResetByLabel(lines, "Current week")
 
+  const scopedModels = extractScopedModels(lines)
+
   if (sessionPercent === null || weeklyPercent === null) {
     const ordered = lines.map(percentFromLine).filter((v): v is number => v !== null)
     if (sessionPercent === null && ordered.length > 0) sessionPercent = ordered[0]
     if (weeklyPercent === null && ordered.length > 1) weeklyPercent = ordered[1]
   }
 
-  return { sessionPercent, weeklyPercent, opusPercent, sonnetPercent, sessionReset, weeklyReset }
+  return { sessionPercent, weeklyPercent, opusPercent, sonnetPercent, sessionReset, weeklyReset, scopedModels }
 }
 
 export async function probeCLIUsage(): Promise<CLIProbeResult | null> {
@@ -289,6 +323,7 @@ export async function probeCLIUsage(): Promise<CLIProbeResult | null> {
       sonnetPercent: parsed.sonnetPercent ?? null,
       sessionReset: parsed.sessionReset ?? null,
       weeklyReset: parsed.weeklyReset ?? null,
+      scopedModels: parsed.scopedModels ?? [],
       email: null,
       org: null,
     }

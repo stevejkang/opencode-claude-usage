@@ -198,6 +198,43 @@ describe("isLimitInactive", () => {
   })
 })
 
+describe("formatRelativeTime with CLI reset strings", () => {
+  it("parses time without Resets prefix: 6:10pm (Asia/Seoul)", () => {
+    const result = formatRelativeTime("6:10pm (Asia/Seoul)")
+    expect(result).not.toBe("—")
+    expect(result).not.toContain("Resets")
+    expect(result).toMatch(/^\d+[mhd]|\bnow\b/)
+  })
+
+  it("parses time without Resets prefix: Aug 14 at 3am (Asia/Seoul)", () => {
+    const result = formatRelativeTime("Aug 14 at 3am (Asia/Seoul)")
+    expect(result).not.toBe("—")
+    expect(result).not.toContain("Resets")
+  })
+
+  it("still parses legacy format with Resets prefix", () => {
+    const result = formatRelativeTime("Resets 5pm (Asia/Seoul)")
+    expect(result).not.toBe("—")
+    expect(result).not.toContain("Resets")
+  })
+
+  it("returns — for unparseable strings", () => {
+    expect(formatRelativeTime("garbage text")).toBe("—")
+  })
+
+  it("parses simple hour format: 5pm", () => {
+    const result = formatRelativeTime("5pm")
+    expect(result).not.toBe("—")
+    expect(result).toMatch(/^\d+[mhd]|\bnow\b/)
+  })
+
+  it("parses hour:minute format: 3:30am", () => {
+    const result = formatRelativeTime("3:30am")
+    expect(result).not.toBe("—")
+    expect(result).toMatch(/^\d+[mhd]|\bnow\b/)
+  })
+})
+
 describe("formatBar", () => {
   it("returns all empty for null utilization", () => {
     const bar = formatBar(null)

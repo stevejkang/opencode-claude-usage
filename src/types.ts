@@ -68,7 +68,12 @@ export interface OAuthCredentials {
   hasProfileScope: boolean
 }
 
-// CLI probe result
+export interface CLIScopedModel {
+  displayName: string
+  percent: number
+  resetsAt: string | null
+}
+
 export interface CLIProbeResult {
   sessionPercent: number | null
   weeklyPercent: number | null
@@ -76,9 +81,16 @@ export interface CLIProbeResult {
   sonnetPercent: number | null
   sessionReset: string | null
   weeklyReset: string | null
+  scopedModels: CLIScopedModel[]
   email: string | null
   org: string | null
 }
+
+// OAuth usage fetch result — distinguishes success, rate-limit, and failure
+export type OAuthUsageResult =
+  | { status: "success"; data: OAuthUsageResponse }
+  | { status: "rate_limited"; retryAfterMs: number }
+  | { status: "failed" }
 
 // Plugin state
 export type FetchStatus = "idle" | "loading" | "success" | "error" | "not-configured"
