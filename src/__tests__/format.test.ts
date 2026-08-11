@@ -1,29 +1,33 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
 import { formatRelativeTime, formatPercentage, formatCreditDisplay, formatBar, windowLabel, limitLabel, isLimitInactive } from "../format.js"
 
+const FIXED_NOW = new Date("2026-08-11T06:00:00Z").getTime()
+
 describe("formatRelativeTime", () => {
+  afterEach(() => { vi.useRealTimers() })
+
   it("returns — for null input", () => {
     expect(formatRelativeTime(null)).toBe("—")
   })
 
   it("returns now for past timestamps", () => {
-    const past = new Date(Date.now() - 60_000).toISOString()
-    expect(formatRelativeTime(past)).toBe("now")
+    vi.useFakeTimers({ now: FIXED_NOW })
+    expect(formatRelativeTime("2026-08-11T05:59:00Z")).toBe("now")
   })
 
   it("formats minutes only when < 1 hour", () => {
-    const future = new Date(Date.now() + 5 * 60 * 1000).toISOString()
-    expect(formatRelativeTime(future)).toBe("5m")
+    vi.useFakeTimers({ now: FIXED_NOW })
+    expect(formatRelativeTime("2026-08-11T06:05:00Z")).toBe("5m")
   })
 
   it("formats hours and minutes when < 1 day", () => {
-    const future = new Date(Date.now() + (1 * 60 + 19) * 60 * 1000).toISOString()
-    expect(formatRelativeTime(future)).toBe("1h 19m")
+    vi.useFakeTimers({ now: FIXED_NOW })
+    expect(formatRelativeTime("2026-08-11T07:19:00Z")).toBe("1h 19m")
   })
 
   it("formats days and hours when >= 1 day", () => {
-    const future = new Date(Date.now() + (4 * 24 + 20) * 60 * 60 * 1000).toISOString()
-    expect(formatRelativeTime(future)).toBe("4d 20h")
+    vi.useFakeTimers({ now: FIXED_NOW })
+    expect(formatRelativeTime("2026-08-15T22:00:00Z")).toBe("4d 16h")
   })
 })
 
