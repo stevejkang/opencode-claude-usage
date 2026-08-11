@@ -116,7 +116,79 @@ describe("fetchUsageData fallback chain", () => {
     expect(result.usage?.limits?.[1]).toMatchObject({ kind: "weekly_all", percent: 20 })
     expect(result.usage?.limits?.[2]).toMatchObject({ kind: "weekly_scoped", percent: 0, scope: { model: { displayName: "Fable" } } })
     expect(result.profile?.email).toBe("user@example.com")
-    expect(result.authMethod).toBe("oauth")
+    expect(result.authMethod).toBe("cli")
+  })
+
+  it("CLI limits have all fields required for bar rendering", async () => {
+    vi.mocked(detectClaude).mockResolvedValue(true)
+    vi.mocked(probeCLIUsage).mockResolvedValue({
+      sessionPercent: 30,
+      weeklyPercent: 5,
+      opusPercent: null,
+      sonnetPercent: null,
+      sessionReset: "6:10pm (Asia/Seoul)",
+      weeklyReset: "Aug 14 at 3am (Asia/Seoul)",
+      scopedModels: [{ displayName: "Fable", percent: 0, resetsAt: null }],
+      email: null,
+      org: null,
+    })
+    vi.mocked(probeStatus).mockResolvedValue({ email: "test@example.com", org: null })
+
+    const result = await fetchUsageData()
+    const limits = result.usage?.limits ?? []
+
+    for (const entry of limits) {
+      expect(typeof entry.percent).toBe("number")
+      expect(typeof entry.kind).toBe("string")
+      expect(typeof entry.severity).toBe("string")
+      expect(typeof entry.isActive).toBe("boolean")
+      expect(entry.resetsAt === null || typeof entry.resetsAt === "string").toBe(true)
+    }
+
+    expect(limits[0]).toMatchObject({ kind: "session", percent: 30, isActive: true })
+    expect(limits[0]?.resetsAt).toBe("6:10pm (Asia/Seoul)")
+    expect(limits[1]).toMatchObject({ kind: "weekly_all", percent: 5 })
+    expect(limits[1]?.resetsAt).toBe("Aug 14 at 3am (Asia/Seoul)")
+    expect(limits[2]).toMatchObject({ kind: "weekly_scoped", percent: 0, isActive: false })
+    expect(limits[2]?.scope?.model?.displayName).toBe("Fable")
+  })
+
+  it("429 reuses lastOAuthUsage without calling CLI probe", async () => {
+    const mockUsage = {
+      fiveHour: { utilization: 30, resetsAt: "2026-08-11T09:00:00Z" },
+      sevenDay: { utilization: 15, resetsAt: "2026-08-14T00:00:00Z" },
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      sevenDayDesign: null,
+      sevenDayRoutines: null,
+      sevenDayOAuthApps: null,
+      extraUsage: { isEnabled: false, monthlyLimit: null, usedCredits: null, utilization: null, currency: null },
+      limits: [
+        { kind: "session", group: "session", percent: 30, severity: "normal", resetsAt: "2026-08-11T09:00:00Z", scope: null, isActive: true },
+        { kind: "weekly_all", group: "weekly", percent: 15, severity: "normal", resetsAt: "2026-08-14T00:00:00Z", scope: null, isActive: true },
+        { kind: "weekly_scoped", group: "weekly", percent: 0, severity: "normal", resetsAt: null, scope: { model: { id: null, displayName: "Fable" }, surface: null }, isActive: false },
+      ],
+    }
+    vi.mocked(readKeychainCredentials).mockResolvedValue({
+      accessToken: "tok", refreshToken: "ref", expiresAt: Date.now() + 3600000,
+      scopes: ["user:inference", "user:profile"], subscriptionType: null, rateLimitTier: null, hasProfileScope: true,
+    })
+    vi.mocked(fetchOAuthUsage).mockResolvedValue({ status: "success", data: mockUsage })
+    vi.mocked(fetchOAuthProfile).mockResolvedValue({ email: "user@example.com", plan: "max" })
+
+    const first = await fetchUsageData()
+    expect(first.authMethod).toBe("oauth")
+    expect(first.usage?.limits).toHaveLength(3)
+
+    vi.mocked(fetchOAuthUsage).mockResolvedValue({ status: "rate_limited", retryAfterMs: 60_000 })
+    vi.mocked(probeCLIUsage).mockClear()
+
+    const second = await fetchUsageData()
+    expect(second.authMethod).toBe("oauth")
+    expect(second.usage?.limits).toHaveLength(3)
+    expect(second.usage?.limits?.[2]?.scope?.model?.displayName).toBe("Fable")
+    expect(second.usage?.extraUsage?.isEnabled).toBe(false)
+    expect(probeCLIUsage).not.toHaveBeenCalled()
   })
 
   it("returns oauth when usage API succeeds", async () => {
