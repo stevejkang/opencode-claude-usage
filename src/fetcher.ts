@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { readKeychainCredentials, readCredentialsFile, readOpenCodeAuth, refreshToken, isTokenExpired } from "./keychain"
@@ -17,47 +18,115 @@ const CACHE_DIR = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), 
 const CACHE_FILE = join(CACHE_DIR, "last.json")
 const CACHE_MAX_AGE_MS = 10 * 60 * 1000
 
-interface CachedResult {
+const CACHE_SCHEMA_VERSION = 2
+const UNKNOWN_ACCOUNT_KEY = "__unknown__"
+
+interface CachedEntry {
+  timestamp: number
+  result: FetchResult
+}
+
+interface CacheStoreV2 {
+  version: typeof CACHE_SCHEMA_VERSION
+  accounts: Record<string, CachedEntry>
+}
+
+interface CacheStoreV1 {
   timestamp: number
   email: string | null
   result: FetchResult
 }
 
-function readCache(email?: string | null): FetchResult | null {
-  try {
-    const raw = readFileSync(CACHE_FILE, "utf8")
-    const cached = JSON.parse(raw) as CachedResult
-    if (Date.now() - cached.timestamp > CACHE_MAX_AGE_MS) return null
-    if (!cached.result?.usage) return null
-    if (email && cached.email && cached.email !== email) return null
-    return cached.result
-  } catch {
-    return null
+function isCacheV1(parsed: unknown): parsed is CacheStoreV1 {
+  if (parsed === null || typeof parsed !== "object") return false
+  const obj = parsed as Record<string, unknown>
+  return "result" in obj && "timestamp" in obj && typeof obj.timestamp === "number"
+}
+
+function isCacheV2(parsed: unknown): parsed is CacheStoreV2 {
+  if (parsed === null || typeof parsed !== "object") return false
+  const obj = parsed as Record<string, unknown>
+  return obj.version === CACHE_SCHEMA_VERSION && typeof obj.accounts === "object"
+}
+
+function migrateV1toV2(v1: CacheStoreV1): CacheStoreV2 {
+  const key = v1.email ?? UNKNOWN_ACCOUNT_KEY
+  return {
+    version: CACHE_SCHEMA_VERSION,
+    accounts: { [key]: { timestamp: v1.timestamp, result: v1.result } },
   }
 }
 
-function writeCache(result: FetchResult): void {
+function readCacheStore(): CacheStoreV2 {
+  try {
+    const raw = readFileSync(CACHE_FILE, "utf8")
+    const parsed = JSON.parse(raw) as unknown
+
+    if (isCacheV2(parsed)) return parsed
+
+    if (isCacheV1(parsed)) {
+      const migrated = migrateV1toV2(parsed)
+      writeCacheStore(migrated)
+      return migrated
+    }
+
+    return { version: CACHE_SCHEMA_VERSION, accounts: {} }
+  } catch {
+    return { version: CACHE_SCHEMA_VERSION, accounts: {} }
+  }
+}
+
+function writeCacheStore(store: CacheStoreV2): void {
   try {
     mkdirSync(CACHE_DIR, { recursive: true })
-    const cached: CachedResult = {
-      timestamp: Date.now(),
-      email: result.profile?.email ?? null,
-      result,
-    }
     const tmpFile = `${CACHE_FILE}.${process.pid}.tmp`
-    writeFileSync(tmpFile, JSON.stringify(cached), { encoding: "utf8", mode: 0o600 })
+    writeFileSync(tmpFile, JSON.stringify(store), { encoding: "utf8", mode: 0o600 })
     renameSync(tmpFile, CACHE_FILE)
   } catch {}
 }
 
+function readCache(email: string | null): FetchResult | null {
+  const store = readCacheStore()
+  const key = email ?? UNKNOWN_ACCOUNT_KEY
+  const entry = store.accounts[key]
+  if (!entry) return null
+  if (Date.now() - entry.timestamp > CACHE_MAX_AGE_MS) return null
+  if (!entry.result?.usage) return null
+  return entry.result
+}
+
+function writeCache(email: string | null, result: FetchResult): void {
+  const store = readCacheStore()
+  const key = email ?? UNKNOWN_ACCOUNT_KEY
+  store.accounts[key] = { timestamp: Date.now(), result }
+  writeCacheStore(store)
+}
+
+export function getCurrentEmail(): string | null {
+  try {
+    const stdout = execFileSync("claude", ["auth", "status"], {
+      timeout: 3_000,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    const data = JSON.parse(stdout as string) as Record<string, unknown>
+    if (typeof data.email === "string") return data.email
+  } catch {}
+
+  return null
+}
+
 /**
  * Fetch Claude usage data via 6-step fallback chain:
- * 0. Environment variable token (CLAUDE_CODE_OAUTH_TOKEN)
- * 1. Credentials file (~/.claude/.credentials.json)
- * 2. OpenCode auth.json + token refresh
- * 3. Keychain (macOS only, user:profile scope required)
+ * 0. Keychain (macOS only, user:profile scope required — updated immediately by claude login)
+ * 1. Environment variable token (CLAUDE_CODE_OAUTH_TOKEN)
+ * 2. Credentials file (~/.claude/.credentials.json)
+ * 3. OpenCode auth.json + token refresh
  * 4. CLI PTY probe (macOS/Linux, Python3 required)
  * 5. Browser cookies (Chrome/Firefox)
+ *
+ * When expectedEmail is given, OAuth steps whose profile email differs
+ * are treated as failures so the chain falls through to the next source.
  *
  * Never throws. Always returns a FetchResult.
  */
@@ -77,7 +146,7 @@ type TryOAuthResult =
   | { ok: true; result: FetchResult }
   | { ok: false; rateLimited: boolean; profile: ProfileResponse | null }
 
-async function tryOAuthToken(token: string): Promise<TryOAuthResult> {
+async function tryOAuthToken(token: string, expectedEmail: string | null): Promise<TryOAuthResult> {
   if (failedTokens.has(token)) return { ok: false, rateLimited: false, profile: null }
 
   if (Date.now() < rateLimitedUntil) {
@@ -90,6 +159,11 @@ async function tryOAuthToken(token: string): Promise<TryOAuthResult> {
       fetchOAuthUsage(token),
       fetchOAuthProfile(token),
     ])
+
+    if (expectedEmail && profile?.email && profile.email !== expectedEmail) {
+      failedTokens.add(token)
+      return { ok: false, rateLimited: false, profile: null }
+    }
 
     if (usageResult.status === "success") {
       rateLimitedUntil = 0
@@ -193,35 +267,46 @@ function buildLimitsFromCLI(
   }
 }
 
-export async function fetchUsageData(): Promise<FetchResult> {
+export async function fetchUsageData(expectedEmail: string | null = null): Promise<FetchResult> {
   failedTokens.clear()
 
   let oauthProfile: ProfileResponse | null = null
   let wasRateLimited = false
 
-  // ── Step 0: Environment variable token (works on all OS)
+  // ── Step 0: Keychain (macOS — claude login updates this immediately)
+  try {
+    const credentials = await readKeychainCredentials()
+    if (credentials?.hasProfileScope) {
+      const attempt = await tryOAuthToken(credentials.accessToken, expectedEmail)
+      if (attempt.ok) return attempt.result
+      if (attempt.rateLimited) wasRateLimited = true
+      if (attempt.profile) oauthProfile = attempt.profile
+    }
+  } catch {}
+
+  // ── Step 1: Environment variable token (works on all OS)
   try {
     const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
     if (envToken) {
-      const attempt = await tryOAuthToken(envToken)
+      const attempt = await tryOAuthToken(envToken, expectedEmail)
       if (attempt.ok) return attempt.result
       if (attempt.rateLimited) wasRateLimited = true
       if (attempt.profile) oauthProfile = attempt.profile
     }
   } catch {}
 
-  // ── Step 1: Credentials file (~/.claude/.credentials.json, cross-platform)
+  // ── Step 2: Credentials file (~/.claude/.credentials.json, cross-platform)
   try {
     const fileCreds = readCredentialsFile()
     if (fileCreds) {
-      const attempt = await tryOAuthToken(fileCreds.accessToken)
+      const attempt = await tryOAuthToken(fileCreds.accessToken, expectedEmail)
       if (attempt.ok) return attempt.result
       if (attempt.rateLimited) wasRateLimited = true
       if (attempt.profile) oauthProfile = attempt.profile
     }
   } catch {}
 
-  // ── Step 2: OpenCode auth.json + token refresh (cross-platform)
+  // ── Step 3: OpenCode auth.json + token refresh (cross-platform)
   try {
     const ocAuth = readOpenCodeAuth()
     if (ocAuth) {
@@ -233,18 +318,7 @@ export async function fetchUsageData(): Promise<FetchResult> {
           lastRefreshedToken = token
         }
       }
-      const attempt = await tryOAuthToken(token)
-      if (attempt.ok) return attempt.result
-      if (attempt.rateLimited) wasRateLimited = true
-      if (attempt.profile) oauthProfile = attempt.profile
-    }
-  } catch {}
-
-  // ── Step 3: Keychain (macOS only, skip if no user:profile scope)
-  try {
-    const credentials = await readKeychainCredentials()
-    if (credentials?.hasProfileScope) {
-      const attempt = await tryOAuthToken(credentials.accessToken)
+      const attempt = await tryOAuthToken(token, expectedEmail)
       if (attempt.ok) return attempt.result
       if (attempt.rateLimited) wasRateLimited = true
       if (attempt.profile) oauthProfile = attempt.profile
@@ -312,14 +386,25 @@ export function createRefreshLoop(
   let lastData: UsageState["data"] = null
   let lastProfile: UsageState["profile"] = null
   let lastAuthMethod: UsageState["authMethod"] = "none"
+  let lastEmail: string | null = null
   let isFirstRun = true
 
   async function refresh(): Promise<void> {
     if (refreshing) return
     refreshing = true
 
+    const currentEmail = getCurrentEmail()
+
+    if (lastEmail !== null && currentEmail !== lastEmail) {
+      resetAuthState()
+      lastData = null
+      lastProfile = null
+      lastAuthMethod = "none"
+    }
+    lastEmail = currentEmail
+
     if (isFirstRun) {
-      const cached = readCache()
+      const cached = readCache(currentEmail)
       if (cached && cached.usage) {
         lastData = cached.usage
         lastProfile = cached.profile
@@ -348,7 +433,7 @@ export function createRefreshLoop(
     }
 
     try {
-      const result = await fetchUsageData()
+      const result = await fetchUsageData(currentEmail)
 
       if (result.authMethod === "none") {
         if (lastData) {
@@ -372,10 +457,11 @@ export function createRefreshLoop(
           })
         }
       } else {
+        const cacheKey = currentEmail ?? result.profile?.email ?? null
         lastData = result.usage
         lastProfile = result.profile
         lastAuthMethod = result.authMethod
-        writeCache(result)
+        writeCache(cacheKey, result)
         setState({
           status: "success",
           data: result.usage,

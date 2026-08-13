@@ -220,4 +220,76 @@ describe("fetchUsageData fallback chain", () => {
     expect(result.usage?.fiveHour?.utilization).toBe(30)
     expect(result.profile?.email).toBe("user@example.com")
   })
+
+  it("rejects token belonging to a different account and falls through to CLI probe", async () => {
+    const mockUsage = {
+      fiveHour: { utilization: 30, resetsAt: "2026-08-11T09:00:00Z" },
+      sevenDay: { utilization: 15, resetsAt: "2026-08-14T00:00:00Z" },
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      sevenDayDesign: null,
+      sevenDayRoutines: null,
+      sevenDayOAuthApps: null,
+      extraUsage: null,
+      limits: null,
+    }
+    vi.mocked(readKeychainCredentials).mockResolvedValue({
+      accessToken: "stale-token",
+      refreshToken: "ref",
+      expiresAt: Date.now() + 3600000,
+      scopes: ["user:inference", "user:profile"],
+      subscriptionType: null,
+      rateLimitTier: null,
+      hasProfileScope: true,
+    })
+    vi.mocked(fetchOAuthUsage).mockResolvedValue({ status: "success", data: mockUsage })
+    vi.mocked(fetchOAuthProfile).mockResolvedValue({ email: "old-account@example.com", plan: "max" })
+    vi.mocked(detectClaude).mockResolvedValue(true)
+    vi.mocked(probeCLIUsage).mockResolvedValue({
+      sessionPercent: 5,
+      weeklyPercent: 10,
+      opusPercent: null,
+      sonnetPercent: null,
+      sessionReset: "5pm (Asia/Seoul)",
+      weeklyReset: "Aug 14 at 3am (Asia/Seoul)",
+      scopedModels: [],
+      email: null,
+      org: null,
+    })
+    vi.mocked(probeStatus).mockResolvedValue({ email: "new-account@example.com", org: null })
+
+    const result = await fetchUsageData("new-account@example.com")
+    expect(result.authMethod).toBe("cli")
+    expect(result.profile?.email).toBe("new-account@example.com")
+    expect(result.usage?.limits?.[0]?.percent).toBe(5)
+  })
+
+  it("accepts token when profile email matches expectedEmail", async () => {
+    const mockUsage = {
+      fiveHour: { utilization: 30, resetsAt: "2026-08-11T09:00:00Z" },
+      sevenDay: { utilization: 15, resetsAt: "2026-08-14T00:00:00Z" },
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      sevenDayDesign: null,
+      sevenDayRoutines: null,
+      sevenDayOAuthApps: null,
+      extraUsage: null,
+      limits: null,
+    }
+    vi.mocked(readKeychainCredentials).mockResolvedValue({
+      accessToken: "tok",
+      refreshToken: "ref",
+      expiresAt: Date.now() + 3600000,
+      scopes: ["user:inference", "user:profile"],
+      subscriptionType: null,
+      rateLimitTier: null,
+      hasProfileScope: true,
+    })
+    vi.mocked(fetchOAuthUsage).mockResolvedValue({ status: "success", data: mockUsage })
+    vi.mocked(fetchOAuthProfile).mockResolvedValue({ email: "user@example.com", plan: "max" })
+
+    const result = await fetchUsageData("user@example.com")
+    expect(result.authMethod).toBe("oauth")
+    expect(result.profile?.email).toBe("user@example.com")
+  })
 })
