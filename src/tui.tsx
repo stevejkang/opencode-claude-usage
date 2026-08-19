@@ -76,7 +76,7 @@ const tui: TuiPlugin = async (api, rawOptions, _meta) => {
         if (s.status === "not-configured") {
           const hint = process.env.CLAUDE_CODE_OAUTH_TOKEN
             ? "Token invalid or expired"
-            : "Set CLAUDE_CODE_OAUTH_TOKEN or run 'claude login'"
+            : "Run 'claude login' or set CLAUDE_CODE_OAUTH_TOKEN"
           return (
             <box flexDirection="column">
               <box height={1}><text fg={CLAUDE_ORANGE}><b>{"Claude Usage"}</b></text></box>
