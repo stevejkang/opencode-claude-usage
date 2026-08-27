@@ -2,7 +2,18 @@
 
 An [opencode](https://opencode.ai) TUI sidebar plugin that displays your Claude account usage. Shows session and weekly rate limits with reset countdowns.
 
-**Text mode** (default):
+**Mixed mode** (default):
+```
+▼ Claude Usage
+ juneyoung.kang@wantedlab.com
+ via cli
+ Session       resets in 3h 16m
+ ━━━━━━━━─────────────────  31%
+ Weekly         resets in 4d 5h
+ ━━━──────────────────────  11%
+```
+
+**Text mode** (`"displayMode": "text"`):
 ```
 ▼ Claude Usage
  juneyoung.kang@wantedlab.com
@@ -51,7 +62,7 @@ opencode resolves the npm package on startup automatically.
   "plugin": [["opencode-claude-usage", {
     "enabled": true,
     "refreshInterval": 60,
-    "displayMode": "text",
+    "displayMode": "mixed",
     "headerColor": "#E07A3A",
     "valueColor": "#82AAFF",
     "dimColor": "#546E7A"
@@ -62,7 +73,7 @@ opencode resolves the npm package on startup automatically.
 | Option | Default | Description |
 |---|---|---|
 | `refreshInterval` | `60` | Seconds between data refreshes |
-| `displayMode` | `"text"` | `"text"` shows percentage + reset time, `"bar"` shows progress bar + percentage + reset time |
+| `displayMode` | `"mixed"` | `"mixed"` shows thin bar + percentage with label and reset time on a separate row. `"text"` shows percentage + reset time. `"bar"` shows block progress bar + percentage + reset time. |
 | `headerColor` | theme text | Color of window labels (Session, Weekly, etc.) |
 | `valueColor` | `#82AAFF` | Color of percentage values |
 | `dimColor` | theme muted | Color of reset times and secondary text |

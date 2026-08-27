@@ -47,14 +47,14 @@ All options are optional. Defaults shown:
 ["opencode-claude-usage", {
   "enabled": true,
   "refreshInterval": 60,
-  "displayMode": "text"
+  "displayMode": "mixed"
 }]
 ```
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `refreshInterval` | `number` | `60` | Seconds between data refreshes |
-| `displayMode` | `string` | `"text"` | `"text"` shows percentage + reset time, `"bar"` shows progress bar + percentage + reset time |
+| `displayMode` | `string` | `"mixed"` | `"mixed"` shows thin bar + percentage with label and reset time on a separate row. `"text"` shows percentage + reset time. `"bar"` shows block progress bar + percentage + reset time. |
 | `headerColor` | `string` | theme text | Color of window labels (Session, Weekly, etc.) |
 | `valueColor` | `string` | `#82AAFF` | Color of percentage values |
 | `dimColor` | `string` | theme muted | Color of reset times and secondary text |
@@ -67,7 +67,18 @@ The plugin loads at startup. Restart opencode to activate.
 
 After restart, the sidebar should show a "Claude Usage" section with usage rows:
 
-**Text mode** (default):
+**Mixed mode** (default):
+```
+▼ Claude Usage
+ user@example.com
+ via cli
+ Session       resets in 3h 16m
+ ━━━━━━━━─────────────────  31%
+ Weekly         resets in 4d 5h
+ ━━━──────────────────────  11%
+```
+
+**Text mode** (`"displayMode": "text"`):
 ```
 ▼ Claude Usage
  user@example.com

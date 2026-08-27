@@ -105,7 +105,7 @@ export interface UsageState {
 }
 
 // Plugin configuration options (from tui.json)
-export type DisplayMode = "text" | "bar"
+export type DisplayMode = "text" | "bar" | "mixed"
 
 export interface PluginOptions {
   refreshInterval?: number
