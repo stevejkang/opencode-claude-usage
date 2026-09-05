@@ -1,6 +1,6 @@
 {
   "name": "opencode-claude-usage",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "OpenCode TUI sidebar plugin displaying Claude account usage statistics",
   "type": "module",
   "exports": {
@@ -34,11 +34,13 @@
       "optional": false
     }
   },
+  "dependencies": {
+    "@opentui/core": "^0.4.5",
+    "@opentui/solid": "^0.4.5",
+    "solid-js": "^1.9.12"
+  },
   "devDependencies": {
-    "@opentui/core": "^0.1.98",
-    "@opentui/solid": "^0.1.98",
     "@types/node": "^25.6.0",
-    "solid-js": "^1.9.12",
     "typescript": "^5.0.0",
     "vitest": "^2.0.0"
   }
