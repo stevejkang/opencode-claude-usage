@@ -1,5 +1,12 @@
 # opencode-claude-usage
 
+> [!WARNING]
+> **This project is no longer maintained.** `v1.2.1` is the final release of `opencode-claude-usage`.
+>
+> All new features, bug fixes, security fixes, and OpenCode v2 support are now provided in **`opencode-ai-usage@latest`**. Please migrate to the new package.
+>
+> See [repository](https://github.com/stevejkang/opencode-ai-usage) · [npm](https://www.npmjs.com/package/opencode-ai-usage)
+
 An [opencode](https://opencode.ai) TUI sidebar plugin that displays your Claude account usage. Shows session and weekly rate limits with reset countdowns.
 
 **Mixed mode** (default):
